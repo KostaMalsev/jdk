@@ -337,21 +337,21 @@ void ZHeap::print_on(outputStream* st) const {
 }
 
 void ZHeap::print_extended_on(outputStream* st) const {
-  print_on(st);
-  st->cr();
-
-  // Do not allow pages to be deleted
-  _page_allocator.enable_safe_destroy();
-
-  // Print all pages
-  st->print_cr("ZGC Page Table:");
+  
   ZPageTableIterator iter(&_page_table);
+  int pageId = 0;
+
   for (ZPage* page; iter.next(&page);) {
-    page->print_on(st);
+
+    if(page->is_old() && page->live_objects()>0){
+      log_info(gc, heap)("[KOSTA]------- Page:%d has #live objects=%u -------", pageId, page->live_objects());
+      page->page_obj_stats();
+      
+    }
+    pageId++;
+
   }
 
-  // Allow pages to be deleted
-  _page_allocator.disable_safe_destroy();
 }
 
 bool ZHeap::print_location(outputStream* st, uintptr_t addr) const {

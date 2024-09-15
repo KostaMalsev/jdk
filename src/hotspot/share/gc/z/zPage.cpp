@@ -32,6 +32,15 @@
 #include "utilities/align.hpp"
 #include "utilities/debug.hpp"
 #include "utilities/growableArray.hpp"
+//#include <bitset> // for bitset manipulation
+#include "oops/fieldStreams.inline.hpp"
+
+//#include <functional> //for cuckoo hashing
+
+
+
+using namespace std;
+
 
 ZPage::ZPage(ZPageType type, const ZVirtualMemory& vmem, const ZPhysicalMemory& pmem)
   : _type(type),
@@ -314,4 +323,361 @@ void ZPage::fatal_msg(const char* msg) const {
   stringStream ss;
   print_on_msg(&ss, msg);
   fatal("%s", ss.base());
+}
+
+
+
+ 
+size_t shash(const char* str) {
+  size_t hash = 5381; // Initial hash value (arbitrary seed)
+  while (*str) {
+    // Shift the hash left 5 bits and add the character code of the current character
+    hash = ((hash << 5) + hash) + (*str);
+    str++;
+  }
+  return hash;
+}
+
+size_t hash_fnv1a(const char* str) {
+    static const std::size_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
+    static const std::size_t FNV_PRIME = 1099511628211ULL;
+
+    size_t hash = FNV_OFFSET_BASIS;
+    while (*str) {
+        hash ^= static_cast<size_t>(*str);
+        hash *= FNV_PRIME;
+        ++str;
+    }
+    return hash;
+}
+
+
+
+u4 sig2size(Symbol* sig) {
+  switch (sig->char_at(0)) {
+    case JVM_SIGNATURE_CLASS:
+    case JVM_SIGNATURE_ARRAY: return sizeof(address);
+    case JVM_SIGNATURE_BOOLEAN:
+    case JVM_SIGNATURE_BYTE: return 1;
+    case JVM_SIGNATURE_SHORT:
+    case JVM_SIGNATURE_CHAR: return 2;
+    case JVM_SIGNATURE_INT:
+    case JVM_SIGNATURE_FLOAT: return 4;
+    case JVM_SIGNATURE_LONG:
+    case JVM_SIGNATURE_DOUBLE: return 8;
+    default: ShouldNotReachHere(); /* to shut up compiler */ return 0;
+  }
+}
+
+size_t shallow_size(InstanceKlass* ik){
+  
+    u4 size = 0;
+    for (HierarchicalFieldStream<JavaFieldStream> fld(ik); !fld.done(); fld.next()) {
+      if (!fld.access_flags().is_static()) {
+         size += sig2size(fld.signature());
+      }
+    }
+    size += 16;//the size of the header of the instance
+
+    size_t padd = (size % 8);
+    padd = padd == 0 ? 0 : 8 - padd;
+    size += padd; //adding padding
+    
+    return size;
+}
+
+
+const int TABLE_SIZE = 1000;//1000
+const int MAX_LOOP = 3;
+
+struct Entry {
+    size_t key;
+    size_t sum;
+    size_t count;
+    bool occupied;
+
+    Entry() : key(0), sum(0), count(0), occupied(false) {}
+};
+
+class CuckooHashTable {
+private:
+    Entry table1[TABLE_SIZE];
+    Entry table2[TABLE_SIZE];
+
+    size_t hash1(size_t key) {
+        return key % TABLE_SIZE;
+    }
+
+    size_t hash2(size_t key) {
+        return (key / TABLE_SIZE) % TABLE_SIZE;
+    }
+
+    void swap(size_t& a, size_t& b){
+        size_t temp = a;
+        a = b;
+        b = temp;
+    }
+
+public:
+    CuckooHashTable() {}
+
+    bool insert(size_t key, size_t value) {
+        size_t curKey = key;
+        size_t curValue = value;
+        
+        for (size_t i = 0; i < MAX_LOOP; ++i) {
+            size_t index1 = hash1(curKey);
+            if (index1 < 0 || index1 >= TABLE_SIZE) {
+                // Invalid index, handle error
+                return false;
+            }
+            if (!table1[index1].occupied) {
+                table1[index1].key = curKey;
+                table1[index1].sum = curValue;
+                table1[index1].count = 1;
+                table1[index1].occupied = true;
+                return true;
+            }
+            
+            if (table1[index1].key == curKey) {
+                table1[index1].sum += curValue;
+                table1[index1].count++;
+                return true;
+            }
+            
+            swap(curKey, table1[index1].key);
+            swap(curValue, table1[index1].sum);
+            size_t tempCount = table1[index1].count;
+            table1[index1].count = 1;
+            curValue += tempCount;
+
+            size_t index2 = hash2(curKey);
+            if (index2 < 0 || index2 >= TABLE_SIZE) {
+                // Invalid index, handle error
+                return false;
+            }
+            if (!table2[index2].occupied) {
+                table2[index2].key = curKey;
+                table2[index2].sum = curValue;
+                table2[index2].count = tempCount;
+                table2[index2].occupied = true;
+                return true;
+            }
+            
+            if (table2[index2].key == curKey) {
+                table2[index2].sum += curValue;
+                table2[index2].count += tempCount;
+                return true;
+            }
+            
+            swap(curKey, table2[index2].key);
+            swap(curValue, table2[index2].sum);
+            swap(tempCount, table2[index2].count);
+        }
+        
+        return false; // Insertion failed after MAX_LOOP iterations
+    }
+
+    bool get(size_t key, size_t& sum, size_t& count) {
+        size_t index1 = hash1(key);
+        if (table1[index1].occupied && table1[index1].key == key) {
+            sum = table1[index1].sum;
+            count = table1[index1].count;
+            return true;
+        }
+
+        size_t index2 = hash2(key);
+        if (table2[index2].occupied && table2[index2].key == key) {
+            sum = table2[index2].sum;
+            count = table2[index2].count;
+            return true;
+        }
+
+        return false;
+    }
+
+    void remove(size_t key) {
+        size_t index1 = hash1(key);
+        if (table1[index1].occupied && table1[index1].key == key) {
+            table1[index1].occupied = false;
+            return;
+        }
+
+        size_t index2 = hash2(key);
+        if (table2[index2].occupied && table2[index2].key == key) {
+            table2[index2].occupied = false;
+            return;
+        }
+    }
+    
+    bool update(size_t key, size_t value) {
+        size_t index1 = hash1(key);
+        if (table1[index1].occupied && table1[index1].key == key) {
+            table1[index1].sum += value;
+            table1[index1].count++;
+            return true;
+        }
+
+        size_t index2 = hash2(key);
+        if (table2[index2].occupied && table2[index2].key == key) {
+            table2[index2].sum += value;
+            table2[index2].count++;
+            return true;
+        }
+
+        // Key not found, insert a new entry
+        return insert(key, value);
+    }
+
+    int loadFactorPercent() const {
+        size_t totalOccupied = 0;
+        for (const auto& entry : table1) {
+            if (entry.occupied) {
+                totalOccupied++;
+            }
+        }
+        for (const auto& entry : table2) {
+            if (entry.occupied) {
+                totalOccupied++;
+            }
+        }
+        double rawLoadFactor = static_cast<double>(totalOccupied) / (TABLE_SIZE * 2);
+        return static_cast<int>(round(rawLoadFactor * 100));
+    }
+};
+
+
+
+
+
+
+void ZPage::page_obj_stats() const {
+  
+  BitMap::idx_t curr_segment = _livemap.first_live_segment();
+
+  //Storing all different instance type name which incountered in this LiveMap of this page:
+  
+  //const int N = 10000;//1000000;
+
+  CuckooHashTable hashTable;
+
+  //std::bitset<N> data;
+  //data.reset();
+
+  //for testing:
+  int distinctCount = 0;
+  int hashAccuracyCount = 0;
+  int invalidCount = 0;
+
+  /*size_t hashVals[N];
+  memset(hashVals, 0, sizeof(hashVals));
+
+  size_t bitPosVals[N];
+  memset(bitPosVals, 0, sizeof(hashVals));*/
+
+  int pos = 0;
+  //-----------
+
+  //Itirate over the live segments in the page:
+  while(curr_segment < 64)
+  {
+
+      //Itirate on all bits in the live segments in the page:
+      const BitMap::idx_t start_index = _livemap.segment_start(curr_segment);
+      const BitMap::idx_t end_index   = _livemap.segment_end(curr_segment);
+          
+      BitMap::idx_t curr_seg_index = start_index;
+      
+      //Itirate over the live bits in the segment:
+      while(curr_seg_index < end_index )
+      {
+        BitMap::idx_t liveBitInd = _livemap.first_set_bit(curr_seg_index, end_index);
+            
+        //Process the bit:
+        oopDesc* obj_ref = object_from_bit_index(liveBitInd);
+
+
+        //--------------TEST for invalid memory access:
+          bool test1 = (obj_ref == nullptr);
+          bool test2 = obj_ref->is_instanceRef();
+          bool test3 = !(obj_ref->klass() == nullptr);
+
+          
+          bool test5 = obj_ref->is_array();//pass
+          bool test6 = obj_ref->is_objArray();//pass
+          bool test7 = obj_ref->is_typeArray();//pass
+          bool test8 = oopDesc::is_oop(obj_ref);//pass
+          
+          bool test9 = obj_ref->is_stackChunk();//pass
+          bool test10 = obj_ref->is_instance();//pass
+
+          
+          bool test12 = !(obj_ref->klass_or_null() == nullptr);//pass
+
+          bool test14 = obj_ref->is_gc_marked();//pass
+
+          //bool test15 = (obj_ref != nullptr) && (obj_ref->klass()->java_mirror_no_keepalive() == nullptr);//failed 
+
+          bool test16 = (obj_ref != nullptr) && (Klass::is_valid( obj_ref->klass() )); //pass
+
+          bool test17 = test16 && obj_ref->klass()->is_klass();//pass
+
+          bool test18 = test16 && (obj_ref->size() > 0);//pass
+
+          if((obj_ref != nullptr) && !(Klass::is_valid( obj_ref->klass() ))){
+            invalidCount++;
+            //log_info(gc, heap)("[KOSTA]: invalid #pointers=%d, index=%zu, adress: %016lx segment:%zu",invalidCount, liveBitInd,p2i(obj_ref),curr_segment);
+          }
+
+          if((obj_ref != nullptr) && (Klass::is_valid( obj_ref->klass() ))){
+
+            const char* str = obj_ref->klass()->external_name();
+
+            InstanceKlass* ik = InstanceKlass::cast(obj_ref->klass());
+            const char* loader_name = ik->class_loader_data()->loader_name_and_id();
+    
+            const size_t sha = shash(str);
+            //const size_t bitPosition = sha % N;
+
+           //if(!data[bitPosition]){
+            size_t sum, count;
+
+            if(!hashTable.get(sha, count, sum)){
+                distinctCount++;
+
+                //log_info(gc, heap)("[KOSTA]:class size:%zu name len:%zu,loader:%s", obj_ref->size(),strlen(str),loader_name);
+
+                if(strstr(loader_name,"app")!=nullptr){
+                  //loader is bootstrap
+                  //loader is plattform
+                  //loader is app
+                  //if( (strstr(str, "KostaClass")!=nullptr) || (strstr(str, "MemoryConsumer")!=nullptr) || (strstr(str, "Professor")!=nullptr) ){
+                    //The shallow size of the object is the size of its reference + sizes of its fields.
+                    //The retained size will be sum of all retained sized of the objects it references.
+
+                    //log_info(gc, heap)("KOSTA: found class:%s size: %zu", str,obj_ref->size()*HeapWordSize); //scaled by word size in bits (HeapWordSize)
+                    log_info(gc, heap)("KOSTA: boots class: %s size: %zu, loader:%s",
+                        //str,obj_ref->size(), loader_name); //scaled by word size in bits (HeapWordSize) 
+                        str, shallow_size(ik), loader_name); //scaled by word size in bits (HeapWordSize)
+                }
+                //log_info(gc, heap)("[KOSTA]:class:%s size:%zu hash:%zu object_count:%d segment:%zu livebit:%zu",
+                //                  str, obj_ref->size(),bitPosition ,distinctCount, curr_segment,liveBitInd);
+
+                //log_info(gc, heap)("[KOSTA]:class %s size:%zu name len:%zu,loader:%s", str, obj_ref->size(),strlen(str),loader_name);
+
+                hashTable.insert(sha,obj_ref->size());
+            }else{
+                
+            }
+          }
+
+        //Increment the window for next live bit search:
+        curr_seg_index = liveBitInd+1;
+      }
+
+      curr_segment  = _livemap.next_live_segment(curr_segment);
+  }
+
+  log_info(gc,heap)("KOSTA:%d #of distinct obj in page,hs load factor:%d per ",distinctCount,hashTable.loadFactorPercent());
+
 }

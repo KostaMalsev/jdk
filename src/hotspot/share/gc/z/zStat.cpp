@@ -1059,6 +1059,7 @@ void ZStat::print(LogTargetHandle log, const ZStatSamplerHistory* history) const
     printer(log, *sampler, sampler_history);
   }
 
+
   log.print("=========================================================================================================================================================");
 }
 
@@ -2018,6 +2019,8 @@ void ZStatHeap::print(const ZGeneration* generation) const {
                      .left(ZTABLE_ARGS_NA)
                      .left(ZTABLE_ARGS(_at_relocate_end.compacted))
                      .end());
+
+  ZStatHeap::print_object_distribution();
 }
 
 void ZStatHeap::print_stalls() const {
@@ -2036,4 +2039,15 @@ void ZStatHeap::print_stalls() const {
                      .center("%zu", _at_relocate_start.allocation_stalls)
                      .center("%zu", _at_relocate_end.allocation_stalls)
                      .end());
+  
+}
+
+
+void ZStatHeap::print_object_distribution() const{
+
+    //ZCollectedHeap::heap()->print_tracing_info();
+    ZCollectedHeap::heap()->print_extended_on(NULL);
+
+
+    //log_info(gc, heap)("Heap object statistics[KOSTA]: Object: %s, found %d times, mean size is %d [MB]","TBD",-1,-1 );
 }

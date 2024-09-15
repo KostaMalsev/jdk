@@ -220,6 +220,8 @@ public:
   void verify_live(uint32_t live_objects, size_t live_bytes, bool in_place) const;
 
   void fatal_msg(const char* msg) const;
+
+  void page_obj_stats() const;
 };
 
 class ZPageClosure {

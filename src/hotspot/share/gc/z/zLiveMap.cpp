@@ -133,3 +133,7 @@ void ZLiveMap::resize(uint32_t size) {
     _segment_shift = exact_log2(segment_size());
   }
 }
+
+BitMap::idx_t ZLiveMap::first_set_bit(BitMap::idx_t beg, BitMap::idx_t end) const {
+  return _bitmap.find_first_set_bit(beg,end);
+}

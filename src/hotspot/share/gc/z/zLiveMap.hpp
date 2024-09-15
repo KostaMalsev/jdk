@@ -53,14 +53,10 @@ private:
 
   BitMap::idx_t segment_size() const;
 
-  BitMap::idx_t segment_start(BitMap::idx_t segment) const;
-  BitMap::idx_t segment_end(BitMap::idx_t segment) const;
 
   bool is_segment_live(BitMap::idx_t segment) const;
   bool set_segment_live(BitMap::idx_t segment);
 
-  BitMap::idx_t first_live_segment() const;
-  BitMap::idx_t next_live_segment(BitMap::idx_t segment) const;
   BitMap::idx_t index_to_segment(BitMap::idx_t index) const;
 
   bool claim_segment(BitMap::idx_t segment);
@@ -95,6 +91,15 @@ public:
 
   BitMap::idx_t find_base_bit(BitMap::idx_t index);
   BitMap::idx_t find_base_bit_in_segment(BitMap::idx_t start, BitMap::idx_t index);
+
+  BitMap::idx_t first_live_segment() const;
+  BitMap::idx_t segment_start(BitMap::idx_t segment) const;
+  BitMap::idx_t segment_end(BitMap::idx_t segment) const;
+
+  BitMap::idx_t next_live_segment(BitMap::idx_t segment) const;
+
+  BitMap::idx_t first_set_bit(BitMap::idx_t beg, BitMap::idx_t end) const;
+
 };
 
 #endif // SHARE_GC_Z_ZLIVEMAP_HPP

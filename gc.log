@@ -1,0 +1,2 @@
+[0.008s][warning][gc] -XX:+PrintGCDetails is deprecated. Will use -Xlog:gc* instead.
+[0.016s][info   ][gc] Using The Z Garbage Collector

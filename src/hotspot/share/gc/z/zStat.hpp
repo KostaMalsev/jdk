@@ -704,6 +704,7 @@ public:
 
   void print(const ZGeneration* generation) const;
   void print_stalls() const;
+  void print_object_distribution() const;
 };
 
 #endif // SHARE_GC_Z_ZSTAT_HPP
